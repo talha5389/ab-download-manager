@@ -8,6 +8,7 @@ import com.abdownloadmanager.desktop.pages.settings.ThemeManager
 import ir.amirab.downloader.queue.QueueManager
 import com.abdownloadmanager.desktop.repository.AppRepository
 import com.abdownloadmanager.desktop.storage.*
+import com.abdownloadmanager.desktop.ui.icon.MyIcons
 import com.abdownloadmanager.desktop.utils.*
 import com.abdownloadmanager.desktop.utils.native_messaging.NativeMessaging
 import com.abdownloadmanager.desktop.utils.native_messaging.NativeMessagingManifestApplier
@@ -23,7 +24,7 @@ import ir.amirab.downloader.utils.IDiskStat
 import ir.amirab.util.startup.Startup
 import com.abdownloadmanager.integration.Integration
 import ir.amirab.downloader.DownloadManager
-import ir.amirab.util.config.datastore.createMyConfigPreferences
+import ir.amirab.util.config.datastore.createMapConfigDatastore
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.Json
 import okhttp3.Dispatcher
@@ -34,8 +35,17 @@ import org.koin.dsl.bind
 import org.koin.dsl.module
 import com.abdownloadmanager.updatechecker.DummyUpdateChecker
 import com.abdownloadmanager.updatechecker.UpdateChecker
+import com.abdownloadmanager.utils.FileIconProvider
+import com.abdownloadmanager.utils.FileIconProviderUsingCategoryIcons
+import com.abdownloadmanager.utils.category.*
+import com.abdownloadmanager.utils.compose.IMyIcons
+import com.abdownloadmanager.utils.proxy.IProxyStorage
+import com.abdownloadmanager.utils.proxy.ProxyData
+import com.abdownloadmanager.utils.proxy.ProxyManager
+import ir.amirab.downloader.connection.proxy.ProxyStrategyProvider
 import ir.amirab.downloader.monitor.IDownloadMonitor
 import ir.amirab.downloader.utils.EmptyFileCreator
+import ir.amirab.util.config.datastore.kotlinxSerializationDataStore
 
 val downloaderModule = module {
     single<IDownloadQueueDatabase> {
@@ -79,6 +89,11 @@ val downloaderModule = module {
             8,
         )
     }
+    single {
+        ProxyManager(
+            get()
+        )
+    }.bind<ProxyStrategyProvider>()
     single<DownloaderClient> {
         OkHttpDownloaderClient(
             OkHttpClient
@@ -87,12 +102,12 @@ val downloaderModule = module {
                     //bypass limit on concurrent connections!
                     maxRequests = Int.MAX_VALUE
                     maxRequestsPerHost = Int.MAX_VALUE
-                }).build()
+                }).build(),
+            get()
         )
-
     }
     single {
-        val downloadSettings:DownloadSettings = get()
+        val downloadSettings: DownloadSettings = get()
         EmptyFileCreator(
             diskStat = get(),
             useSparseFile = { downloadSettings.useSparseFileAllocation }
@@ -104,8 +119,45 @@ val downloaderModule = module {
     single<IDownloadMonitor> {
         DownloadMonitor(get())
     }
+}
+val downloadSystemModule = module {
     single {
-        DownloadSystem(get(), get(), get(), get(), get(), get())
+        CategoryFileStorage(
+            file = get<DownloadFoldersRegistry>().registerAndGet(
+                AppInfo.downloadDbDir.resolve("categories")
+            ).resolve("categories.json"),
+            fileSaver = get()
+        )
+    }.bind<CategoryStorage>()
+    single {
+        FileIconProviderUsingCategoryIcons(
+            get(),
+            get(),
+            MyIcons,
+        )
+    }.bind<FileIconProvider>()
+    single {
+        DefaultCategories(
+            icons = get(),
+            getDefaultDownloadFolder = {
+                get<AppSettingsStorage>().defaultDownloadFolder.value
+            }
+        )
+    }
+    single {
+        DownloadManagerCategoryItemProvider(get())
+    }.bind<ICategoryItemProvider>()
+    single {
+        CategoryManager(
+            categoryStorage = get(),
+            scope = get(),
+            defaultCategoriesFactory = get(),
+            categoryItemProvider = get(),
+        )
+    }
+
+    single {
+        DownloadSystem(get(), get(), get(), get(), get(), get(), get())
     }
 }
 val coroutineModule = module {
@@ -154,6 +206,7 @@ val nativeMessagingModule = module {
 
 val appModule = module {
     includes(downloaderModule)
+    includes(downloadSystemModule)
     includes(coroutineModule)
     includes(jsonModule)
     includes(integrationModule)
@@ -167,11 +220,23 @@ val appModule = module {
         AppRepository()
     }
     single {
-        ThemeManager(get(),get())
+        ThemeManager(get(), get())
     }
     single {
+        MyIcons
+    }.bind<IMyIcons>()
+    single {
+        ProxyDatastoreStorage(
+            kotlinxSerializationDataStore(
+                AppInfo.optionsDir.resolve("proxySettings.json"),
+                get(),
+                ProxyData::default,
+            )
+        )
+    }.bind<IProxyStorage>()
+    single {
         AppSettingsStorage(
-            createMyConfigPreferences(
+            createMapConfigDatastore(
                 AppInfo.configDir.resolve("appSettings.json"),
                 get(),
             )
@@ -179,7 +244,7 @@ val appModule = module {
     }
     single {
         PageStatesStorage(
-            createMyConfigPreferences(
+            createMapConfigDatastore(
                 AppInfo.configDir.resolve("pageStatesStorage.json"),
                 get(),
             )
